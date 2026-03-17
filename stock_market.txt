@@ -1,0 +1,201 @@
+# ============================================================
+# 📈 StockTrendAI – Apple Stock Prediction
+# Full Pipeline:
+# Missing Values (Mean/Median/Mode) + Outlier Handling + LSTM
+# ============================================================
+
+# -------------------------------
+# 1. Import Required Libraries
+# -------------------------------
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+import matplotlib.pyplot as plt
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+
+# -------------------------------
+# 2. Download Apple Historical Data
+# -------------------------------
+
+print("\n📥 Downloading Apple Stock Data...")
+data = yf.download("AAPL", start="2015-01-01", end="2024-12-31")
+
+print("\nInitial Dataset Shape:", data.shape)
+print(data.head())
+
+
+print("\n🔎 Missing Values BEFORE Handling:\n")
+print(data.isnull().sum())
+
+# -------------------------------
+# 3. Handle Missing Values
+# -------------------------------
+
+# Numeric columns
+num_cols = data.select_dtypes(include=['float64','int64']).columns
+
+# --- Using MEAN ---
+data_mean = data.copy()
+data_mean[num_cols] = data_mean[num_cols].fillna(data_mean[num_cols].mean())
+
+# --- Using MEDIAN ---
+data_median = data.copy()
+data_median[num_cols] = data_median[num_cols].fillna(data_median[num_cols].median())
+
+# --- Using MODE ---
+data_mode = data.copy()
+for col in num_cols:
+    data_mode[col] = data_mode[col].fillna(data_mode[col].mode()[0])
+
+print("\n✅ Missing Values AFTER MEAN:\n", data_mean.isnull().sum())
+print("\n✅ Missing Values AFTER MEDIAN:\n", data_median.isnull().sum())
+print("\n✅ Missing Values AFTER MODE:\n", data_mode.isnull().sum())
+
+# 👉 Choose ONE cleaned dataset for modeling (mean used here)
+data = data_mean.copy()
+
+# -------------------------------
+# 4. Remove Duplicate Rows
+# -------------------------------
+
+data.drop_duplicates(inplace=True)
+
+# -------------------------------
+# 5. Outlier Handling using IQR
+# -------------------------------
+
+print("\n📊 Handling Outliers using IQR...")
+
+Q1 = data[num_cols].quantile(0.25)
+Q3 = data[num_cols].quantile(0.75)
+IQR = Q3 - Q1
+
+lower_bound = Q1 - 1.5 * IQR
+upper_bound = Q3 + 1.5 * IQR
+
+# Replace outliers with median values
+for col in num_cols:
+    median_val = data[col].median()
+    data[col] = np.where(
+        (data[col] < lower_bound[col]) | (data[col] > upper_bound[col]),
+        median_val,
+        data[col]
+    )
+
+print("✅ Outliers handled using IQR method")
+
+# -------------------------------
+# 6. Prepare Close Price for Model
+# -------------------------------
+
+close_price = data[['Close']].values
+
+# Scaling
+scaler = MinMaxScaler()
+scaled_data = scaler.fit_transform(close_price)
+
+# -------------------------------
+# 7. Create Timelines (LSTM Sequences)
+# -------------------------------
+
+TIME_STEP = 60
+X, y = [], []
+
+for i in range(TIME_STEP, len(scaled_data)):
+    X.append(scaled_data[i-TIME_STEP:i, 0])
+    y.append(scaled_data[i, 0])
+
+X, y = np.array(X), np.array(y)
+X = X.reshape(X.shape[0], X.shape[1], 1)
+
+print("\nTimeline Shape:", X.shape)
+
+# -------------------------------
+# 8. Train-Test Split
+# -------------------------------
+
+split = int(len(X)*0.8)
+
+X_train, X_test = X[:split], X[split:]
+y_train, y_test = y[:split], y[split:]
+
+# -------------------------------
+# 9. Build LSTM Model
+# -------------------------------
+
+model = Sequential([
+    Input(shape=(TIME_STEP,1)),
+    LSTM(50, return_sequences=True),
+    Dropout(0.2),
+    LSTM(50),
+    Dense(1)
+])
+
+model.compile(optimizer='adam', loss='mse')
+
+print("\n🚀 Training Model...")
+model.fit(X_train, y_train, epochs=20, batch_size=32, verbose=1)
+
+# -------------------------------
+# 10. Model Evaluation
+# -------------------------------
+
+train_pred = scaler.inverse_transform(model.predict(X_train))
+test_pred  = scaler.inverse_transform(model.predict(X_test))
+
+y_train_actual = scaler.inverse_transform(y_train.reshape(-1,1))
+y_test_actual  = scaler.inverse_transform(y_test.reshape(-1,1))
+
+train_rmse = np.sqrt(mean_squared_error(y_train_actual, train_pred))
+test_rmse  = np.sqrt(mean_squared_error(y_test_actual, test_pred))
+
+print("\n📈 Model Performance")
+print("Train RMSE:", train_rmse)
+print("Test RMSE :", test_rmse)
+
+# -------------------------------
+# 11. Future Trend Prediction
+# -------------------------------
+
+last_60 = scaled_data[-TIME_STEP:].reshape(1,TIME_STEP,1)
+future_price = scaler.inverse_transform(model.predict(last_60))
+
+today_price = close_price[-1][0]
+
+print("\n🔮 Prediction Results")
+print("Today's Price:", today_price)
+print("Predicted Next Price:", future_price[0][0])
+
+if future_price[0][0] > today_price:
+    print("📈 Predicted Trend: UPWARD")
+else:
+    print("📉 Predicted Trend: DOWNWARD")
+
+# -------------------------------
+# 12. Visualization
+# -------------------------------
+
+plt.figure(figsize=(12,6))
+plt.plot(close_price, label="Actual Price")
+
+train_plot = np.full(close_price.shape, np.nan)
+train_plot[TIME_STEP:split+TIME_STEP,0] = train_pred[:,0]
+
+test_plot = np.full(close_price.shape, np.nan)
+test_plot[split+TIME_STEP:,0] = test_pred[:,0]
+
+plt.plot(train_plot, label="Train Prediction")
+plt.plot(test_plot, label="Test Prediction")
+
+plt.title("Apple Stock Trend Prediction After Preprocessing")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+print("\n✅ Full Pipeline Completed Successfully")
